@@ -59,7 +59,7 @@
         <a class="btn btn-secondary" href="{{ url_for('exportar_importacao_erp_excel', import_id=importacao.id) }}">Exportar Excel</a>
         <a class="btn btn-secondary" href="{{ url_for('exportar_importacao_erp_pdf', import_id=importacao.id) }}">Exportar PDF</a>
         <button class="btn-secondary" type="button" onclick="window.print()">Imprimir</button>
-        <a class="btn btn-danger" href="{{ url_for('remover_importacao_erp_confirmar', import_id=importacao.id) }}">Remover importação</a>
+        <a class="btn btn-danger" href="{{ '/estoque/importar-erp/%s/remover' % importacao.id }}">Remover importação</a>
       </div>
     </div>
   </div>
@@ -138,6 +138,12 @@
               {% if imp.aplicado_em %}<span><strong>Aplicado:</strong> {{ imp.aplicado_em }}</span>{% endif %}
               <span><strong>Usuário:</strong> {{ imp.usuario_nome or imp.usuario_login or 'Sistema' }}</span>
             </div>
+          </div>
+          <div class="stock-export-actions" style="justify-content:flex-end;margin-top:10px;">
+            <a class="btn btn-secondary" href="{{ url_for('detalhe_importacao_erp', import_id=imp.id) }}">Abrir</a>
+            {% if g.user and g.user.role == 'admin' %}
+            <a class="btn btn-danger" href="{{ '/estoque/importar-erp/%s/remover' % imp.id }}">Remover</a>
+            {% endif %}
           </div>
         </article>
         {% endfor %}

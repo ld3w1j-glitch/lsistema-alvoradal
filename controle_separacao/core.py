@@ -3824,6 +3824,76 @@ def aplicar_importacao_erp(import_id: int) -> Response:
     return redirect(url_for("detalhe_importacao_erp", import_id=import_id))
 
 
+
+@app.get("/estoque/importar-erp/<int:import_id>/remover")
+@login_required
+@module_required("estoque")
+@roles_required("admin")
+def remover_importacao_erp_confirmar(import_id: int) -> str | Response:
+    """Tela de confirmação para remover uma importação ERP da lista de importações recentes."""
+    if not can_edit_stock_registration(g.user):
+        return forbidden_redirect("Somente admin pode remover importações do ERP.")
+    importacao = _erp_importacao_row(import_id)
+    if importacao is None:
+        flash("Importação ERP não encontrada.", "error")
+        return redirect(url_for("importar_estoque_erp"))
+    resumo = _erp_resumo_from_json(importacao)
+    total_itens = query_one("SELECT COUNT(*) AS total FROM erp_stock_import_items WHERE import_id = ?", (import_id,))
+    return render_template(
+        "importacao_erp_remover.html",
+        title=f"Remover importação ERP #{import_id}",
+        importacao=importacao,
+        resumo=resumo,
+        total_itens=int(total_itens["total"] or 0) if total_itens else 0,
+    )
+
+
+@app.post("/estoque/importar-erp/<int:import_id>/remover")
+@login_required
+@module_required("estoque")
+@roles_required("admin")
+def remover_importacao_erp(import_id: int) -> Response:
+    """Remove o histórico de uma importação ERP, com senha, backup e auditoria.
+
+    Se a importação já foi aplicada, esta ação remove apenas o registro
+    da importação e seus itens de prévia. Ela NÃO desfaz movimentações nem saldo do estoque.
+    """
+    if not can_edit_stock_registration(g.user):
+        return forbidden_redirect("Somente admin pode remover importações do ERP.")
+
+    importacao = _erp_importacao_row(import_id)
+    if importacao is None:
+        flash("Importação ERP não encontrada.", "error")
+        return redirect(url_for("importar_estoque_erp"))
+
+    senha_admin = request.form.get("senha_admin", "")
+    motivo = str(request.form.get("motivo") or "").strip()[:500]
+    if not check_password_hash(g.user["password_hash"], senha_admin):
+        flash("Senha do admin incorreta. A importação não foi removida.", "error")
+        return redirect(f"/estoque/importar-erp/{import_id}/remover")
+
+    with closing(get_conn()) as conn:
+        itens = conn.execute("SELECT * FROM erp_stock_import_items WHERE import_id = ? ORDER BY id ASC", (import_id,)).fetchall()
+        backup_path = _backup_erp_importacao(importacao, itens, motivo)
+        conn.execute("DELETE FROM erp_stock_import_items WHERE import_id = ?", (import_id,))
+        conn.execute("DELETE FROM erp_stock_imports WHERE id = ?", (import_id,))
+        conn.commit()
+
+    registrar_auditoria(
+        "remover_importacao_erp",
+        "erp_stock_imports",
+        str(import_id),
+        {
+            "filename": importacao["filename"],
+            "status": importacao["status"],
+            "total_itens": len(itens),
+            "motivo": motivo,
+            "backup": backup_path,
+            "observacao": "Histórico removido. Se já estava aplicado, o estoque não foi desfeito automaticamente.",
+        },
+    )
+    flash(f"Importação ERP #{import_id} removida com sucesso. Backup criado em {backup_path}.", "success")
+    return redirect(url_for("importar_estoque_erp"))
 @app.get("/estoque/importar-erp/<int:import_id>/exportar.xlsx")
 @login_required
 @module_required("estoque")
