@@ -59,6 +59,7 @@
         <a class="btn btn-secondary" href="{{ url_for('exportar_importacao_erp_excel', import_id=importacao.id) }}">Exportar Excel</a>
         <a class="btn btn-secondary" href="{{ url_for('exportar_importacao_erp_pdf', import_id=importacao.id) }}">Exportar PDF</a>
         <button class="btn-secondary" type="button" onclick="window.print()">Imprimir</button>
+        <a class="btn btn-danger" href="{{ url_for('remover_importacao_erp_confirmar', import_id=importacao.id) }}">Remover importação</a>
       </div>
     </div>
   </div>

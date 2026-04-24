@@ -3481,6 +3481,32 @@ def _erp_importacoes_recentes(limit: int = 15) -> list[sqlite3.Row]:
     )
 
 
+
+def _erp_backup_dir() -> Path:
+    """Pasta segura para backup das importações ERP removidas pelo admin."""
+    folder = Path(BASE_DIR) / "backups" / "importacoes_erp"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _backup_erp_importacao(importacao: sqlite3.Row, itens: list[sqlite3.Row], motivo: str = "") -> str:
+    """Salva a importação e seus itens antes de remover do banco."""
+    payload = {
+        "gerado_em": agora_iso(),
+        "admin_id": g.user["id"] if getattr(g, "user", None) is not None else None,
+        "admin_username": g.user["username"] if getattr(g, "user", None) is not None else None,
+        "motivo": motivo,
+        "importacao": dict(importacao),
+        "total_itens": len(itens),
+        "itens": [dict(item) for item in itens],
+        "observacao": "Backup criado antes de remover o registro da importação ERP. Remover o histórico da importação não desfaz alterações de estoque já aplicadas.",
+    }
+    filename = f"importacao_erp_removida_{importacao['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
+    path = _erp_backup_dir() / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return str(path.relative_to(BASE_DIR))
+
+
 def _erp_import_items(import_id: int, filtro: str = "", limit: int = 350) -> list[sqlite3.Row]:
     where = ["import_id = ?"]
     params: list[Any] = [import_id]
