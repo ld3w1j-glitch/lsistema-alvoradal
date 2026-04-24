@@ -18,7 +18,8 @@
           1. Crie a contagem.<br>
           2. Registre os produtos pelo código ou código de barras.<br>
           3. Imprima ou exporte o relatório para comparar.<br>
-          4. Confirme apenas quando tiver certeza para atualizar o estoque.
+          4. Confirme apenas quando tiver certeza para atualizar o estoque.<br>
+          5. Se criar uma contagem errada, o admin pode remover pela lista.
         </div>
       </div>
     </div>
@@ -29,7 +30,7 @@
       {% if balances %}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Título</th><th>Status</th><th>Itens</th><th>Divergências</th><th>Criado por</th><th>Criado em</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>Título</th><th>Status</th><th>Itens</th><th>Divergências</th><th>Criado por</th><th>Criado em</th><th>Ações</th></tr></thead>
           <tbody>
           {% for b in balances %}
             <tr>
@@ -40,7 +41,14 @@
               <td>{{ b.divergencias or 0 }}</td>
               <td>{{ b.criado_por_nome or '-' }}</td>
               <td>{{ b.criado_em }}</td>
-              <td><a class="btn btn-secondary" href="{{ url_for('detalhe_balanco', balance_id=b.id) }}">Abrir</a></td>
+              <td>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+                  <a class="btn btn-secondary" href="{{ url_for('detalhe_balanco', balance_id=b.id) }}">Abrir</a>
+                  {% if user_is_admin(g.user) %}
+                  <a class="btn" href="{{ url_for('confirmar_remover_balanco', balance_id=b.id) }}" style="background:#dc2626; border-color:#dc2626; color:white;">Remover</a>
+                  {% endif %}
+                </div>
+              </td>
             </tr>
           {% endfor %}
           </tbody>

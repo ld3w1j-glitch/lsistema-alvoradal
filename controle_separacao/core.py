@@ -5872,6 +5872,75 @@ def confirmar_balanco(balance_id: int) -> Response:
     return redirect(url_for("detalhe_balanco", balance_id=balance_id))
 
 
+@app.get("/balanco/<int:balance_id>/remover")
+@login_required
+@module_required("balanco")
+@roles_required("admin")
+def confirmar_remover_balanco(balance_id: int) -> str | Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None:
+        flash("Contagem não encontrada.", "error")
+        return redirect(url_for("balancos"))
+    with closing(get_conn()) as conn:
+        resumo = conn.execute(
+            """
+            SELECT COUNT(*) AS total_itens,
+                   COALESCE(SUM(CASE WHEN ABS(delta) > 0.000001 THEN 1 ELSE 0 END), 0) AS divergencias
+            FROM balance_count_items
+            WHERE balance_count_id = ?
+            """,
+            (balance_id,),
+        ).fetchone()
+    return render_template("balanco_remover.html", balanco=balanco, resumo=resumo)
+
+
+@app.post("/balanco/<int:balance_id>/remover")
+@login_required
+@module_required("balanco")
+@roles_required("admin")
+def remover_balanco(balance_id: int) -> Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None:
+        flash("Contagem não encontrada.", "error")
+        return redirect(url_for("balancos"))
+
+    senha_admin = request.form.get("senha_admin", "")
+    if not check_password_hash(g.user["password_hash"], senha_admin):
+        flash("Senha do admin incorreta. A contagem não foi removida.", "error")
+        return redirect(url_for("balancos"))
+
+    titulo = str(balanco["titulo"] or "")
+    status = str(balanco["status"] or "")
+    with closing(get_conn()) as conn:
+        resumo = conn.execute(
+            """
+            SELECT COUNT(*) AS total_itens,
+                   COALESCE(SUM(CASE WHEN ABS(delta) > 0.000001 THEN 1 ELSE 0 END), 0) AS divergencias
+            FROM balance_count_items
+            WHERE balance_count_id = ?
+            """,
+            (balance_id,),
+        ).fetchone()
+        conn.execute("DELETE FROM balance_count_items WHERE balance_count_id = ?", (balance_id,))
+        conn.execute("DELETE FROM balance_counts WHERE id = ?", (balance_id,))
+        conn.commit()
+
+    registrar_auditoria(
+        "remover_balanco_estoque",
+        "balance_counts",
+        str(balance_id),
+        {
+            "titulo": titulo,
+            "status": status,
+            "total_itens": int(resumo["total_itens"] or 0) if resumo else 0,
+            "divergencias": int(resumo["divergencias"] or 0) if resumo else 0,
+            "observacao": "Remove apenas o registro da contagem. Se o balanço já estava confirmado, o estoque não é desfeito automaticamente.",
+        },
+    )
+    flash("Contagem removida com sucesso.", "success")
+    return redirect(url_for("balancos"))
+
+
 @app.get("/balanco/<int:balance_id>/exportar.xlsx")
 @login_required
 @module_required("balanco")
