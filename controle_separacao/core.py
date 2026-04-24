@@ -1574,6 +1574,52 @@ def contar_vinculos_usuario(conn: sqlite3.Connection, user_id: int) -> dict[str,
     return resultado
 
 
+
+
+def carregar_historicos_vinculados_usuario(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    """Lista separações finalizadas vinculadas ao usuário para revisão/estorno seguro."""
+    return conn.execute(
+        """
+        SELECT s.*, st.nome AS store_nome,
+               r.nome AS responsavel_nome,
+               c.nome AS conferente_nome,
+               creator.nome AS criado_por_nome,
+               COUNT(si.id) AS total_itens,
+               COALESCE(SUM(si.quantidade_separada), 0) AS total_separado
+        FROM separations s
+        JOIN stores st ON st.id = s.store_id
+        LEFT JOIN users r ON r.id = s.responsavel_id
+        LEFT JOIN users c ON c.id = s.conferente_id
+        LEFT JOIN users creator ON creator.id = s.criado_por
+        LEFT JOIN separation_items si ON si.separation_id = s.id
+        WHERE s.status = 'FINALIZADA'
+          AND (s.responsavel_id = ? OR s.conferente_id = ? OR s.criado_por = ?)
+        GROUP BY s.id
+        ORDER BY COALESCE(s.finalizado_em, s.criado_em) DESC, s.id DESC
+        """,
+        (user_id, user_id, user_id),
+    ).fetchall()
+
+
+def resumo_estorno_historicos_usuario(conn: sqlite3.Connection, separation_ids: list[int]) -> list[sqlite3.Row]:
+    if not separation_ids:
+        return []
+    placeholders = ",".join("?" for _ in separation_ids)
+    return conn.execute(
+        f"""
+        SELECT si.codigo,
+               MAX(si.descricao) AS descricao,
+               COUNT(DISTINCT si.separation_id) AS total_historicos,
+               COALESCE(SUM(si.quantidade_separada), 0) AS quantidade_a_devolver
+        FROM separation_items si
+        WHERE si.separation_id IN ({placeholders})
+        GROUP BY si.codigo
+        ORDER BY MAX(si.descricao) COLLATE NOCASE
+        """,
+        tuple(separation_ids),
+    ).fetchall()
+
+
 def usuario_tem_vinculos(conn: sqlite3.Connection, user_id: int) -> bool:
     return bool(contar_vinculos_usuario(conn, user_id))
 
@@ -1581,6 +1627,95 @@ def usuario_tem_vinculos(conn: sqlite3.Connection, user_id: int) -> bool:
 def desativar_usuario_com_seguranca(conn: sqlite3.Connection, user_id: int) -> None:
     conn.execute("UPDATE users SET ativo = 0 WHERE id = ?", (user_id,))
 
+
+
+@app.route("/usuarios/<int:user_id>/historico", methods=["GET", "POST"])
+@login_required
+@module_required("usuarios")
+@roles_required("admin")
+def historico_usuario(user_id: int) -> str | Response:
+    with closing(get_conn()) as conn:
+        user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            flash("Usuário não encontrado.", "error")
+            return redirect(url_for("usuarios"))
+
+        historicos = carregar_historicos_vinculados_usuario(conn, user_id)
+        historico_ids_validos = {int(row["id"]) for row in historicos}
+
+        if request.method == "POST":
+            selecionados = [int(v) for v in request.form.getlist("separation_ids") if str(v).isdigit()]
+            selecionados = [sid for sid in selecionados if sid in historico_ids_validos]
+            if not selecionados:
+                flash("Selecione pelo menos um histórico finalizado para excluir/estornar.", "error")
+                return redirect(url_for("historico_usuario", user_id=user_id))
+
+            acao = request.form.get("acao", "preview")
+            resumo = resumo_estorno_historicos_usuario(conn, selecionados)
+
+            if acao == "preview":
+                selecionados_set = set(selecionados)
+                historicos_preview = [row for row in historicos if int(row["id"]) in selecionados_set]
+                return render_template(
+                    "usuario_historico.html",
+                    title="Histórico vinculado ao usuário",
+                    user=user,
+                    historicos=historicos,
+                    historicos_preview=historicos_preview,
+                    resumo=resumo,
+                    selecionados=selecionados,
+                    modo_preview=True,
+                )
+
+            if acao == "confirmar":
+                senha_admin = request.form.get("senha_admin", "")
+                if not check_password_hash(g.user["password_hash"], senha_admin):
+                    flash("Senha do admin incorreta. Nada foi alterado.", "error")
+                    return redirect(url_for("historico_usuario", user_id=user_id))
+
+                total_estornado = 0.0
+                total_historicos = 0
+                for sid in selecionados:
+                    sep = conn.execute("SELECT status FROM separations WHERE id = ?", (sid,)).fetchone()
+                    if sep is None or sep["status"] != "FINALIZADA":
+                        continue
+                    before = conn.execute(
+                        "SELECT COALESCE(SUM(quantidade_separada), 0) AS total FROM separation_items WHERE separation_id = ?",
+                        (sid,),
+                    ).fetchone()
+                    apagar_historico_separacao_no_conn(conn, sid, g.user["id"])
+                    total_estornado += float((before["total"] if before else 0) or 0)
+                    total_historicos += 1
+
+                conn.commit()
+                registrar_auditoria(
+                    "excluir_historico_usuario_com_estorno",
+                    "user",
+                    str(user_id),
+                    {
+                        "usuario_alvo": user["username"],
+                        "historicos": selecionados,
+                        "total_historicos": total_historicos,
+                        "total_estornado": total_estornado,
+                    },
+                )
+                flash(
+                    f"Histórico removido com segurança: {total_historicos} registro(s). "
+                    f"Total devolvido ao estoque: {total_estornado:g}.",
+                    "success",
+                )
+                return redirect(url_for("historico_usuario", user_id=user_id))
+
+        return render_template(
+            "usuario_historico.html",
+            title="Histórico vinculado ao usuário",
+            user=user,
+            historicos=historicos,
+            historicos_preview=[],
+            resumo=[],
+            selecionados=[],
+            modo_preview=False,
+        )
 
 @app.post("/usuarios/<int:user_id>/excluir")
 @login_required

@@ -91,6 +91,7 @@
         <form method="post" action="{{ url_for('alternar_usuario', user_id=user.id) }}">
           <button class="btn-secondary" type="submit">{{ 'Desativar' if user.ativo else 'Ativar' }}</button>
         </form>
+        <a class="btn-secondary" href="{{ url_for('historico_usuario', user_id=user.id) }}">Histórico/Estorno</a>
         <form method="post" action="{{ url_for('excluir_usuario', user_id=user.id) }}" onsubmit="return confirm('Excluir este usuário?');">
           <button class="btn-danger" type="submit">Excluir</button>
         </form>
