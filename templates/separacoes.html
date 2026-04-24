@@ -5,7 +5,7 @@
   <div class="card">
     <div class="toolbar">
       <h2 class="section-title">Operações por lote</h2>
-      {% if g.user['role'] == 'admin' %}<a class="btn" href="{{ url_for('nova_separacao') }}">Novo lote</a>{% endif %}
+      {% if user_has_access(g.user, 'pedidos') %}{% if user_has_access(g.user, 'pedidos') %}<a class="btn" href="{{ url_for('nova_separacao') }}">Novo lote</a>{% endif %}{% endif %}
     </div>
     <div class="table-responsive"><table>
       <thead><tr><th>Lote</th><th>Data</th><th>Lojas</th><th>Responsável</th><th>Conferente</th><th>Ações</th></tr></thead>
@@ -18,7 +18,7 @@
           <td>{{ lote.responsavel_nome or '-' }}</td>
           <td>{{ lote.conferente_nome or '-' }}</td>
           <td class="actions-cell">
-            {% if g.user['role'] == 'admin' %}<a class="btn" href="{{ url_for('grade_lote', lote_codigo=lote.operacao_chave) }}">Montar pedido</a>{% endif %}
+            {% if user_has_access(g.user, 'lotes') %}<a class="btn" href="{{ url_for('grade_lote', lote_codigo=lote.operacao_chave) }}">Montar pedido</a>{% endif %}
             {% if g.user['role'] in ['admin', 'separador'] %}<a class="btn btn-secondary" href="{{ url_for('separar_itens_lote', lote_codigo=lote.operacao_chave) }}">Separar itens</a>{% endif %}
             {% if usar_conferente and g.user['role'] in ['admin', 'conferente'] %}<a class="btn btn-secondary" href="{{ url_for('conferir_itens_lote', lote_codigo=lote.operacao_chave) }}">Começar conferência</a>{% endif %}
           </td>

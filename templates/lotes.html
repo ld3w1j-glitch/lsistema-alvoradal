@@ -4,7 +4,7 @@
   <div class="card">
     <div class="toolbar">
       <h1 class="section-title">Lotes</h1>
-      <a class="btn" href="{{ url_for('nova_separacao') }}">Novo lote</a>
+      {% if user_has_access(g.user, 'pedidos') %}<a class="btn" href="{{ url_for('nova_separacao') }}">Novo lote</a>{% endif %}
     </div>
     <div class="table-responsive"><table>
       <thead><tr><th>Lote</th><th>Data</th><th>Lojas</th><th>Responsável</th><th>Conferente</th><th>Ações</th></tr></thead>
@@ -17,7 +17,7 @@
         <td>{{ lote.responsavel_nome or '-' }}</td>
         <td>{{ lote.conferente_nome or '-' }}</td>
         <td class="actions-cell">
-          <a class="btn" href="{{ url_for('grade_lote', lote_codigo=lote.operacao_chave) }}">Operar lote</a>
+          {% if user_has_access(g.user, 'lotes') %}<a class="btn" href="{{ url_for('grade_lote', lote_codigo=lote.operacao_chave) }}">Operar lote</a>{% endif %}
           <form method="post" action="{{ url_for('excluir_lote', lote_codigo=lote.operacao_chave) }}">
             <button class="btn-danger" type="submit">Excluir lote</button>
           </form>

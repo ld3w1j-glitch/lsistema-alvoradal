@@ -164,8 +164,8 @@ DEFAULT_ACCESS_BY_ROLE: dict[str, set[str]] = {
     "admin": set(ACCESS_KEYS),
     "gerente": {"painel", "separacoes", "estoque", "balanco", "relatorios", "lojas", "lotes", "mcp_teste"},
     "estoque": {"painel", "estoque", "balanco", "relatorios", "lotes", "mcp_teste"},
-    "separador": {"painel", "separacoes"},
-    "conferente": {"painel", "separacoes"},
+    "separador": {"painel", "separacoes", "pedidos", "lotes"},
+    "conferente": {"painel", "separacoes", "pedidos", "lotes"},
     "balanco": {"painel", "estoque", "balanco", "relatorios", "mcp_teste"},
     "desenvolvedor": {"painel", "mcp_teste", "codigo_fonte"},
     "visualizador": {"painel", "relatorios", "mcp_teste"},
@@ -460,6 +460,9 @@ def ensure_schema_updates(conn: sqlite3.Connection) -> None:
     for user in users:
         permission_level = normalize_permission_level(user["permission_level"], user["role"])
         access_rules = parse_access_rules(user["access_rules"], user["role"], permission_level)
+        role_norm = normalize_role(user["role"])
+        if permission_level != "admin" and role_norm in {"separador", "conferente", "estoque", "gerente"}:
+            access_rules.update({"pedidos", "lotes"})
         conn.execute(
             "UPDATE users SET permission_level = ?, access_rules = ? WHERE id = ?",
             (permission_level, serialize_access_rules(access_rules), user["id"]),
@@ -4281,7 +4284,6 @@ def desfazer_pendencias_transferidas(conn: sqlite3.Connection, separation_id: in
 @app.route("/separacoes/nova", methods=["GET", "POST"])
 @login_required
 @module_required("pedidos")
-@roles_required("admin")
 def nova_separacao() -> str | Response:
     if request.method == "POST":
         lote_nome = request.form.get("lote_nome", "").strip()
@@ -4607,7 +4609,6 @@ def separation_visibility_clause() -> tuple[str, list[Any]]:
 @app.get("/lotes")
 @login_required
 @module_required("lotes")
-@roles_required("admin")
 def listar_lotes() -> str:
     return render_template("lotes.html", title="Lotes", lotes=listar_lotes_em_aberto())
 
@@ -4617,7 +4618,6 @@ def listar_lotes() -> str:
 @app.route("/lotes/<lote_codigo>/grade", methods=["GET", "POST"])
 @login_required
 @module_required("lotes")
-@roles_required("admin")
 def grade_lote(lote_codigo: str) -> str | Response:
     separacoes = carregar_lote(lote_codigo)
     if not separacoes:
