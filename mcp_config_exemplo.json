@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "sistema-alvorada": {
+      "command": "python",
+      "args": [
+        "-m",
+        "controle_separacao.mcp_server"
+      ],
+      "env": {
+        "DB_PATH": "C:\\CAMINHO\\DO\\SISTEMA\\dados.db"
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block content %}
+<main class="wrap page">
+  <section class="card">
+    <div class="section-title" style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div>
+        <span class="eyebrow">Segurança</span>
+        <h1>Auditoria do sistema</h1>
+        <p class="muted">Registro de logins, exportações, erros, configurações, ações MCP e alterações de código.</p>
+      </div>
+    </div>
+
+    <form method="get" class="inline" style="margin:12px 0 18px;">
+      <input type="search" name="q" value="{{ q }}" placeholder="Buscar usuário, arquivo, ação ou detalhe">
+      <select name="action">
+        <option value="">Todas as ações</option>
+        {% for item in actions %}
+          <option value="{{ item.action }}" {% if action == item.action %}selected{% endif %}>{{ item.action }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Filtrar</button>
+      <a class="btn btn-secondary" href="{{ url_for('auditoria') }}">Limpar</a>
+    </form>
+
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Usuário</th>
+            <th>Ação</th>
+            <th>Entidade</th>
+            <th>Referência</th>
+            <th>Detalhes</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for log in logs %}
+          <tr>
+            <td>{{ log.created_at }}</td>
+            <td>{{ log.usuario_nome or log.usuario_login or 'Sistema' }}</td>
+            <td><span class="badge">{{ log.action }}</span></td>
+            <td>{{ log.entity_type or '-' }}</td>
+            <td>{{ log.entity_ref or '-' }}</td>
+            <td><code class="audit-details">{{ log.details }}</code></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Nenhum registro encontrado.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+{% endblock %}
