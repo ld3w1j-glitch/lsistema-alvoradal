@@ -136,6 +136,7 @@ ACCESS_OPTIONS: list[tuple[str, str]] = [
     ("painel", "Painel"),
     ("separacoes", "Separações"),
     ("estoque", "Estoque"),
+    ("balanco", "Balanço"),
     ("relatorios", "Relatórios"),
     ("usuarios", "Usuários"),
     ("lojas", "Lojas"),
@@ -161,11 +162,11 @@ ROLE_LABELS = {
 }
 DEFAULT_ACCESS_BY_ROLE: dict[str, set[str]] = {
     "admin": set(ACCESS_KEYS),
-    "gerente": {"painel", "separacoes", "estoque", "relatorios", "lojas", "lotes", "mcp_teste"},
-    "estoque": {"painel", "estoque", "relatorios", "lotes", "mcp_teste"},
+    "gerente": {"painel", "separacoes", "estoque", "balanco", "relatorios", "lojas", "lotes", "mcp_teste"},
+    "estoque": {"painel", "estoque", "balanco", "relatorios", "lotes", "mcp_teste"},
     "separador": {"painel", "separacoes"},
     "conferente": {"painel", "separacoes"},
-    "balanco": {"painel", "estoque", "relatorios", "mcp_teste"},
+    "balanco": {"painel", "estoque", "balanco", "relatorios", "mcp_teste"},
     "desenvolvedor": {"painel", "mcp_teste", "codigo_fonte"},
     "visualizador": {"painel", "relatorios", "mcp_teste"},
 }
@@ -173,6 +174,7 @@ MODULE_ENDPOINTS = {
     "painel": "dashboard",
     "separacoes": "listar_separacoes",
     "estoque": "estoque",
+    "balanco": "balancos",
     "relatorios": "relatorios",
     "usuarios": "usuarios",
     "lojas": "lojas",
@@ -189,6 +191,7 @@ STOCK_MOVEMENT_TYPE_OPTIONS: list[tuple[str, str]] = [
     ("IMPORTACAO_ERP_NOVO", "Novo via ERP"),
     ("AJUSTE_MANUAL", "Ajuste manual"),
     ("RECONTAGEM", "Ajuste de quantidade"),
+    ("BALANCO_ESTOQUE", "Balanço de estoque"),
     ("REMOVIDO_ESTOQUE", "Remoção do estoque"),
     ("SAIDA_SEPARACAO", "Saída por separação"),
     ("ESTORNO_HISTORICO", "Estorno do histórico"),
@@ -597,6 +600,38 @@ CREATE TABLE IF NOT EXISTS separation_items (
     FOREIGN KEY (separation_id) REFERENCES separations (id) ON DELETE CASCADE
 );
 
+
+CREATE TABLE IF NOT EXISTS balance_counts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    titulo TEXT NOT NULL,
+    observacao TEXT,
+    status TEXT NOT NULL DEFAULT 'ABERTO',
+    criado_por INTEGER,
+    criado_em TEXT NOT NULL,
+    confirmado_por INTEGER,
+    confirmado_em TEXT,
+    FOREIGN KEY (criado_por) REFERENCES users (id),
+    FOREIGN KEY (confirmado_por) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS balance_count_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    balance_count_id INTEGER NOT NULL,
+    stock_item_id INTEGER NOT NULL,
+    codigo TEXT NOT NULL,
+    descricao TEXT NOT NULL,
+    linha_erp TEXT,
+    quantidade_sistema REAL NOT NULL DEFAULT 0,
+    quantidade_contada REAL NOT NULL DEFAULT 0,
+    delta REAL NOT NULL DEFAULT 0,
+    custo_unitario REAL NOT NULL DEFAULT 0,
+    criado_em TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL,
+    FOREIGN KEY (balance_count_id) REFERENCES balance_counts (id) ON DELETE CASCADE,
+    FOREIGN KEY (stock_item_id) REFERENCES stock_items (id),
+    UNIQUE(balance_count_id, stock_item_id)
+);
+
 CREATE TABLE IF NOT EXISTS mcp_saved_queries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
@@ -904,7 +939,7 @@ def bootstrap() -> Response | None:
     g.user = current_user()
     g.maintenance_mode = get_setting("maintenance_mode", "0") == "1"
     endpoint = request.endpoint or ""
-    allowed = {"static", "login", "logout"}
+    allowed = {"static", "login", "logout", "health", "favicon"}
     if g.maintenance_mode and endpoint not in allowed:
         if g.user is None or not user_is_admin(g.user):
             return render_template("manutencao.html", title="Sistema em manutenção"), 503
@@ -1499,12 +1534,52 @@ def alternar_usuario(user_id: int) -> Response:
     return redirect(url_for("usuarios"))
 
 
+def tabela_existe(conn: sqlite3.Connection, tabela: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (tabela,),
+    ).fetchone()
+    return row is not None
+
+
+def colunas_tabela(conn: sqlite3.Connection, tabela: str) -> set[str]:
+    if not tabela_existe(conn, tabela):
+        return set()
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({tabela})").fetchall()}
+
+
+def contar_vinculos_usuario(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+    checks = {
+        "separações como responsável": ("separations", "responsavel_id"),
+        "separações como conferente": ("separations", "conferente_id"),
+        "separações criadas": ("separations", "criado_por"),
+        "movimentações de estoque": ("stock_movements", "criado_por"),
+        "balanços criados": ("balance_counts", "criado_por"),
+        "balanços confirmados": ("balance_counts", "confirmado_por"),
+        "consultas MCP salvas": ("mcp_saved_queries", "user_id"),
+        "histórico de consultas MCP": ("mcp_query_history", "user_id"),
+        "ações MCP preparadas": ("mcp_prepared_actions", "user_id"),
+        "auditoria": ("audit_logs", "user_id"),
+        "edições de código": ("code_edit_history", "user_id"),
+        "importações ERP": ("erp_stock_imports", "criado_por"),
+    }
+    resultado: dict[str, int] = {}
+    for label, (tabela, coluna) in checks.items():
+        if coluna not in colunas_tabela(conn, tabela):
+            continue
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM {tabela} WHERE {coluna} = ?", (user_id,)).fetchone()
+        total = int((row["c"] if row else 0) or 0)
+        if total > 0:
+            resultado[label] = total
+    return resultado
+
+
 def usuario_tem_vinculos(conn: sqlite3.Connection, user_id: int) -> bool:
-    counts = [
-        conn.execute("SELECT COUNT(*) AS c FROM separations WHERE responsavel_id = ? OR conferente_id = ? OR criado_por = ?", (user_id, user_id, user_id)).fetchone()["c"],
-        conn.execute("SELECT COUNT(*) AS c FROM stock_movements WHERE criado_por = ?", (user_id,)).fetchone()["c"],
-    ]
-    return any(int(c or 0) > 0 for c in counts)
+    return bool(contar_vinculos_usuario(conn, user_id))
+
+
+def desativar_usuario_com_seguranca(conn: sqlite3.Connection, user_id: int) -> None:
+    conn.execute("UPDATE users SET ativo = 0 WHERE id = ?", (user_id,))
 
 
 @app.post("/usuarios/<int:user_id>/excluir")
@@ -1524,15 +1599,49 @@ def excluir_usuario(user_id: int) -> Response:
 
         outros_admins = count_admin_users(conn, exclude_user_id=user_id)
         if user_is_admin(user) and int(outros_admins or 0) == 0:
-            flash("Não é possível excluir o último admin do sistema.", "error")
+            flash("Não é possível excluir ou desativar o último admin do sistema.", "error")
             return redirect(url_for("usuarios"))
 
-        if usuario_tem_vinculos(conn, user_id):
-            flash("Esse usuário já tem vínculo com separações ou movimentações. Desative em vez de excluir.", "error")
+        vinculos = contar_vinculos_usuario(conn, user_id)
+        if vinculos:
+            desativar_usuario_com_seguranca(conn, user_id)
+            conn.commit()
+            registrar_auditoria(
+                "desativar_usuario_com_vinculos",
+                "user",
+                str(user_id),
+                {"username": user["username"], "vinculos": vinculos},
+            )
+            resumo = ", ".join(f"{nome}: {qtd}" for nome, qtd in list(vinculos.items())[:4])
+            if len(vinculos) > 4:
+                resumo += ", ..."
+            flash(
+                "Esse usuário possui histórico no sistema e não pode ser apagado sem quebrar registros antigos. "
+                f"Ele foi desativado com segurança. Vínculos encontrados: {resumo}.",
+                "warning",
+            )
             return redirect(url_for("usuarios"))
 
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        conn.commit()
+        try:
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.commit()
+            registrar_auditoria("excluir_usuario", "user", str(user_id), {"username": user["username"]})
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            desativar_usuario_com_seguranca(conn, user_id)
+            conn.commit()
+            registrar_auditoria(
+                "desativar_usuario_por_integridade",
+                "user",
+                str(user_id),
+                {"username": user["username"], "erro": str(exc)},
+            )
+            flash(
+                "Não foi possível apagar esse usuário porque ele está ligado ao histórico do sistema. "
+                "Para preservar os registros, ele foi desativado com segurança.",
+                "warning",
+            )
+            return redirect(url_for("usuarios"))
 
     flash("Usuário excluído com sucesso.", "success")
     return redirect(url_for("usuarios"))
@@ -5314,6 +5423,281 @@ def api_produto() -> Response:
             "custo_unitario": item["custo_unitario"],
         }
     )
+
+
+
+# -----------------------------------------------------------------------------
+# Balanço / Contagem de estoque
+# -----------------------------------------------------------------------------
+
+def _balance_row(balance_id: int) -> sqlite3.Row | None:
+    return query_one(
+        """
+        SELECT b.*, u.nome AS criado_por_nome, uc.nome AS confirmado_por_nome
+        FROM balance_counts b
+        LEFT JOIN users u ON u.id = b.criado_por
+        LEFT JOIN users uc ON uc.id = b.confirmado_por
+        WHERE b.id = ?
+        """,
+        (balance_id,),
+    )
+
+
+def _balance_items(balance_id: int) -> list[sqlite3.Row]:
+    return query_all(
+        """
+        SELECT *
+        FROM balance_count_items
+        WHERE balance_count_id = ?
+        ORDER BY linha_erp IS NULL, linha_erp, descricao
+        """,
+        (balance_id,),
+    )
+
+
+def _balance_summary(items: list[sqlite3.Row]) -> dict[str, Any]:
+    total = len(items)
+    divergentes = sum(1 for i in items if abs(float(i["delta"] or 0)) > 0.000001)
+    sobras = sum(1 for i in items if float(i["delta"] or 0) > 0)
+    faltas = sum(1 for i in items if float(i["delta"] or 0) < 0)
+    valor_delta = sum(float(i["delta"] or 0) * float(i["custo_unitario"] or 0) for i in items)
+    return {"total": total, "divergentes": divergentes, "sobras": sobras, "faltas": faltas, "valor_delta": valor_delta}
+
+
+@app.route("/balanco", methods=["GET", "POST"])
+@login_required
+@module_required("balanco")
+def balancos() -> str | Response:
+    if request.method == "POST":
+        titulo = request.form.get("titulo", "").strip() or f"Balanço {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        observacao = request.form.get("observacao", "").strip()
+        with closing(get_conn()) as conn:
+            cur = conn.execute(
+                "INSERT INTO balance_counts (titulo, observacao, status, criado_por, criado_em) VALUES (?, ?, 'ABERTO', ?, ?)",
+                (titulo, observacao, g.user["id"], agora_iso()),
+            )
+            conn.commit()
+            balance_id = cur.lastrowid
+        registrar_auditoria("criar_balanco", "balance_counts", str(balance_id), {"titulo": titulo})
+        flash("Contagem de estoque criada. Agora registre as mercadorias contadas.", "success")
+        return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+
+    balances = query_all(
+        """
+        SELECT b.*, u.nome AS criado_por_nome,
+               (SELECT COUNT(*) FROM balance_count_items i WHERE i.balance_count_id = b.id) AS total_itens,
+               (SELECT COUNT(*) FROM balance_count_items i WHERE i.balance_count_id = b.id AND ABS(i.delta) > 0.000001) AS divergencias
+        FROM balance_counts b
+        LEFT JOIN users u ON u.id = b.criado_por
+        ORDER BY b.id DESC
+        LIMIT 80
+        """
+    )
+    return render_template("balancos.html", title="Balanço de estoque", balances=balances)
+
+
+@app.route("/balanco/<int:balance_id>", methods=["GET", "POST"])
+@login_required
+@module_required("balanco")
+def detalhe_balanco(balance_id: int) -> str | Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None:
+        flash("Balanço não encontrado.", "error")
+        return redirect(url_for("balancos"))
+
+    if request.method == "POST":
+        if balanco["status"] != "ABERTO":
+            flash("Este balanço já foi confirmado/fechado e não aceita novas contagens.", "error")
+            return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+        codigo = request.form.get("codigo", "").strip()
+        quantidade_raw = request.form.get("quantidade_contada", "").strip()
+        modo = request.form.get("modo", "substituir")
+        if not codigo:
+            flash("Informe o código ou código de barras do produto.", "error")
+            return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+        try:
+            quantidade = parse_float(quantidade_raw, "Quantidade contada")
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+
+        with closing(get_conn()) as conn:
+            item = conn.execute(
+                """
+                SELECT * FROM stock_items
+                WHERE ativo = 1 AND (codigo = ? OR codigo_barras = ?)
+                LIMIT 1
+                """,
+                (codigo, codigo),
+            ).fetchone()
+            if item is None:
+                flash("Produto não encontrado no estoque.", "error")
+                return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+            existente = conn.execute(
+                "SELECT * FROM balance_count_items WHERE balance_count_id = ? AND stock_item_id = ?",
+                (balance_id, item["id"]),
+            ).fetchone()
+            agora = agora_iso()
+            sistema = float(item["quantidade_atual"] or 0)
+            if existente:
+                nova_contada = float(existente["quantidade_contada"] or 0) + quantidade if modo == "somar" else quantidade
+                conn.execute(
+                    """
+                    UPDATE balance_count_items
+                    SET quantidade_contada = ?, delta = ?, atualizado_em = ?
+                    WHERE id = ?
+                    """,
+                    (nova_contada, nova_contada - float(existente["quantidade_sistema"] or 0), agora, existente["id"]),
+                )
+                flash("Item atualizado na contagem.", "success")
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO balance_count_items
+                    (balance_count_id, stock_item_id, codigo, descricao, linha_erp, quantidade_sistema, quantidade_contada, delta, custo_unitario, criado_em, atualizado_em)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (balance_id, item["id"], item["codigo"], item["descricao"], item["linha_erp"], sistema, quantidade, quantidade - sistema, item["custo_unitario"] or 0, agora, agora),
+                )
+                flash("Item registrado na contagem.", "success")
+            conn.commit()
+        registrar_auditoria("registrar_item_balanco", "balance_counts", str(balance_id), {"codigo": codigo, "quantidade": quantidade})
+        return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+
+    items = _balance_items(balance_id)
+    resumo = _balance_summary(items)
+    return render_template("balanco_detalhe.html", title=f"Balanço #{balance_id}", balanco=balanco, items=items, resumo=resumo)
+
+
+@app.post("/balanco/<int:balance_id>/item/<int:item_id>/remover")
+@login_required
+@module_required("balanco")
+def remover_item_balanco(balance_id: int, item_id: int) -> Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None or balanco["status"] != "ABERTO":
+        flash("Não é possível remover item deste balanço.", "error")
+        return redirect(url_for("balancos"))
+    with closing(get_conn()) as conn:
+        conn.execute("DELETE FROM balance_count_items WHERE id = ? AND balance_count_id = ?", (item_id, balance_id))
+        conn.commit()
+    registrar_auditoria("remover_item_balanco", "balance_counts", str(balance_id), {"item_id": item_id})
+    flash("Item removido da contagem.", "success")
+    return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+
+
+@app.post("/balanco/<int:balance_id>/confirmar")
+@login_required
+@module_required("balanco")
+def confirmar_balanco(balance_id: int) -> Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None:
+        flash("Balanço não encontrado.", "error")
+        return redirect(url_for("balancos"))
+    if balanco["status"] != "ABERTO":
+        flash("Este balanço já foi confirmado.", "error")
+        return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+    if not can_edit_stock_registration(g.user):
+        return forbidden_redirect("Somente admin pode confirmar balanço e atualizar o estoque.")
+    items = _balance_items(balance_id)
+    if not items:
+        flash("Inclua ao menos um item antes de confirmar.", "error")
+        return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+    agora = agora_iso()
+    with closing(get_conn()) as conn:
+        for item in items:
+            contada = float(item["quantidade_contada"] or 0)
+            atual = conn.execute("SELECT quantidade_atual FROM stock_items WHERE id = ?", (item["stock_item_id"],)).fetchone()
+            atual_qtd = float(atual["quantidade_atual"] or 0) if atual else float(item["quantidade_sistema"] or 0)
+            delta_real = contada - atual_qtd
+            conn.execute("UPDATE stock_items SET quantidade_atual = ?, atualizado_em = ? WHERE id = ?", (contada, agora, item["stock_item_id"]))
+            conn.execute(
+                """
+                INSERT INTO stock_movements
+                (stock_item_id, tipo, quantidade, observacao, referencia_tipo, referencia_id, criado_por, criado_em)
+                VALUES (?, 'BALANCO_ESTOQUE', ?, ?, 'BALANCO', ?, ?, ?)
+                """,
+                (item["stock_item_id"], delta_real, f"Atualização por balanço #{balance_id}: sistema {fmt_num(atual_qtd)} → contado {fmt_num(contada)}", balance_id, g.user["id"], agora),
+            )
+        conn.execute("UPDATE balance_counts SET status = 'CONFIRMADO', confirmado_por = ?, confirmado_em = ? WHERE id = ?", (g.user["id"], agora, balance_id))
+        conn.commit()
+    registrar_auditoria("confirmar_balanco", "balance_counts", str(balance_id), {"total_itens": len(items)})
+    flash("Balanço confirmado e estoque atualizado com base na contagem.", "success")
+    return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+
+
+@app.get("/balanco/<int:balance_id>/exportar.xlsx")
+@login_required
+@module_required("balanco")
+def exportar_balanco_excel(balance_id: int) -> Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None:
+        flash("Balanço não encontrado.", "error")
+        return redirect(url_for("balancos"))
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+    except ImportError:
+        flash("Para exportar em Excel, instale openpyxl.", "error")
+        return redirect(url_for("detalhe_balanco", balance_id=balance_id))
+    items = _balance_items(balance_id)
+    resumo = _balance_summary(items)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Balanço"
+    ws.append(["Balanço de estoque", f"#{balance_id}"])
+    ws.append(["Título", balanco["titulo"]])
+    ws.append(["Status", balanco["status"]])
+    ws.append(["Criado em", balanco["criado_em"]])
+    ws.append(["Total itens", resumo["total"]])
+    ws.append(["Divergências", resumo["divergentes"]])
+    ws.append([])
+    headers = ["Linha", "Código", "Descrição", "Qtd sistema", "Qtd contada", "Diferença", "Custo unit.", "Valor diferença"]
+    ws.append(headers)
+    for cell in ws[8]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="3F7E33")
+    for i in items:
+        delta = float(i["delta"] or 0)
+        custo = float(i["custo_unitario"] or 0)
+        ws.append([i["linha_erp"] or "-", i["codigo"], i["descricao"], i["quantidade_sistema"], i["quantidade_contada"], delta, custo, delta*custo])
+    for col in ws.columns:
+        ws.column_dimensions[col[0].column_letter].width = min(max(max(len(str(c.value or "")) for c in col) + 2, 10), 45)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    registrar_auditoria("exportar_balanco_excel", "balance_counts", str(balance_id), {})
+    return send_file(buf, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name=f"balanco_{balance_id}.xlsx")
+
+
+@app.get("/balanco/<int:balance_id>/exportar.pdf")
+@login_required
+@module_required("balanco")
+def exportar_balanco_pdf(balance_id: int) -> Response:
+    balanco = _balance_row(balance_id)
+    if balanco is None:
+        flash("Balanço não encontrado.", "error")
+        return redirect(url_for("balancos"))
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    items = _balance_items(balance_id)
+    resumo = _balance_summary(items)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), rightMargin=.8*cm, leftMargin=.8*cm, topMargin=.8*cm, bottomMargin=.8*cm)
+    styles = getSampleStyleSheet()
+    story = [Paragraph(f"Balanço de estoque #{balance_id}", styles["Title"]), Paragraph(f"{balanco['titulo']} • Status: {balanco['status']} • Criado em: {balanco['criado_em']}", styles["Normal"]), Spacer(1,.2*cm)]
+    cards = [["Indicador", "Valor"], ["Itens contados", str(resumo["total"])], ["Divergências", str(resumo["divergentes"])], ["Sobras", str(resumo["sobras"])], ["Faltas", str(resumo["faltas"])], ["Valor diferença", fmt_brl(resumo["valor_delta"])]]
+    t = Table(cards, repeatRows=1)
+    t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#3f7e33")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),.25,colors.grey),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold")]))
+    story.append(t); story.append(Spacer(1,.25*cm))
+    rows = [["Linha", "Código", "Descrição", "Sistema", "Contado", "Dif."]]
+    rows.extend([[(i["linha_erp"] or "-")[:24], i["codigo"], (i["descricao"] or "")[:75], fmt_num(i["quantidade_sistema"]), fmt_num(i["quantidade_contada"]), fmt_num(i["delta"])] for i in items[:160]])
+    table = Table(rows, repeatRows=1)
+    table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor("#3f7e33")),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),.2,colors.grey),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),7)]))
+    story.append(table)
+    doc.build(story); buf.seek(0)
+    registrar_auditoria("exportar_balanco_pdf", "balance_counts", str(balance_id), {})
+    return send_file(buf, mimetype="application/pdf", as_attachment=True, download_name=f"balanco_{balance_id}.pdf")
 
 
 

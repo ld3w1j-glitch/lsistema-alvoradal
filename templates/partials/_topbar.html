@@ -16,6 +16,7 @@
       {% if user_has_access(g.user, 'painel') %}<a href="{{ url_for('dashboard') }}">Painel</a>{% endif %}
       {% if user_has_access(g.user, 'separacoes') %}<a href="{{ url_for('listar_separacoes') }}">Separações</a>{% endif %}
       {% if user_has_access(g.user, 'estoque') %}<a href="{{ url_for('estoque') }}">Estoque</a>{% endif %}
+      {% if user_has_access(g.user, 'balanco') %}<a href="{{ url_for('balancos') }}">Balanço</a>{% endif %}
       {% if user_has_access(g.user, 'estoque') and user_is_admin(g.user) %}<a href="{{ url_for('importar_estoque_erp') }}">Importar ERP</a>{% endif %}
       {% if user_has_access(g.user, 'relatorios') %}<a href="{{ url_for('relatorios') }}">Relatórios</a>{% endif %}
       {% if user_has_access(g.user, 'usuarios') %}<a href="{{ url_for('usuarios') }}">Usuários</a>{% endif %}
