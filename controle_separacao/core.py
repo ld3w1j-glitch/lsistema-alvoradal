@@ -3113,12 +3113,52 @@ def admin_codigo_fonte() -> str | Response:
     )
 
 
+def _audit_backup_dir() -> Path:
+    """Pasta segura para backups de auditoria removida pelo admin."""
+    folder = Path(BASE_DIR) / "backups" / "auditoria"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _backup_auditoria_rows(rows: list[sqlite3.Row], motivo: str = "") -> str:
+    """Salva os registros antes de remover, para permitir conferência posterior."""
+    if not rows:
+        return ""
+    payload = {
+        "gerado_em": agora_iso(),
+        "admin_id": g.user["id"] if getattr(g, "user", None) is not None else None,
+        "admin_username": g.user["username"] if getattr(g, "user", None) is not None else None,
+        "motivo": motivo,
+        "total_registros": len(rows),
+        "registros": [dict(row) for row in rows],
+    }
+    filename = f"auditoria_removida_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.json"
+    path = _audit_backup_dir() / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    return str(path.relative_to(BASE_DIR))
+
+
+def _parse_ids(raw_ids: Iterable[str]) -> list[int]:
+    ids: list[int] = []
+    for raw in raw_ids:
+        try:
+            value = int(str(raw).strip())
+        except Exception:
+            continue
+        if value > 0 and value not in ids:
+            ids.append(value)
+    return ids
+
+
 @app.get("/auditoria")
 @login_required
 @module_required("auditoria")
 def auditoria() -> str:
     q = str(request.args.get("q") or "").strip()
     action = str(request.args.get("action") or "").strip()
+    usuario = str(request.args.get("usuario") or "").strip()
+    data_inicio = str(request.args.get("data_inicio") or "").strip()
+    data_fim = str(request.args.get("data_fim") or "").strip()
     params: list[Any] = []
     where_parts: list[str] = []
     if q:
@@ -3128,6 +3168,16 @@ def auditoria() -> str:
     if action:
         where_parts.append("a.action = ?")
         params.append(action)
+    if usuario:
+        where_parts.append("(u.nome LIKE ? OR u.username LIKE ?)")
+        like_user = f"%{usuario}%"
+        params.extend([like_user, like_user])
+    if data_inicio:
+        where_parts.append("date(a.created_at) >= date(?)")
+        params.append(data_inicio)
+    if data_fim:
+        where_parts.append("date(a.created_at) <= date(?)")
+        params.append(data_fim)
     where = "WHERE " + " AND ".join(where_parts) if where_parts else ""
     logs = query_all(
         f"""
@@ -3136,12 +3186,74 @@ def auditoria() -> str:
         LEFT JOIN users u ON u.id = a.user_id
         {where}
         ORDER BY a.id DESC
-        LIMIT 300
+        LIMIT 500
         """,
         params,
     )
-    actions = query_all("SELECT DISTINCT action FROM audit_logs ORDER BY action ASC LIMIT 100")
-    return render_template("auditoria.html", title="Auditoria", logs=logs, actions=actions, q=q, action=action)
+    actions = query_all("SELECT DISTINCT action FROM audit_logs ORDER BY action ASC LIMIT 150")
+    return render_template(
+        "auditoria.html",
+        title="Auditoria",
+        logs=logs,
+        actions=actions,
+        q=q,
+        action=action,
+        usuario=usuario,
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+    )
+
+
+@app.post("/auditoria/excluir")
+@login_required
+@module_required("auditoria")
+@roles_required("admin")
+def excluir_auditoria() -> Response:
+    ids = _parse_ids(request.form.getlist("ids"))
+    senha_admin = request.form.get("senha_admin", "")
+    motivo = str(request.form.get("motivo") or "").strip()[:500]
+
+    if not ids:
+        flash("Selecione pelo menos um registro de auditoria para excluir.", "error")
+        return redirect(url_for("auditoria"))
+
+    if not check_password_hash(g.user["password_hash"], senha_admin):
+        flash("Senha do admin incorreta. Nenhum registro foi excluído.", "error")
+        return redirect(url_for("auditoria"))
+
+    placeholders = ",".join("?" for _ in ids)
+    with closing(get_conn()) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT a.*, u.nome AS usuario_nome, u.username AS usuario_login
+            FROM audit_logs a
+            LEFT JOIN users u ON u.id = a.user_id
+            WHERE a.id IN ({placeholders})
+            ORDER BY a.id ASC
+            """,
+            ids,
+        ).fetchall()
+
+        if not rows:
+            flash("Nenhum registro válido foi encontrado para excluir.", "error")
+            return redirect(url_for("auditoria"))
+
+        backup_path = _backup_auditoria_rows(rows, motivo)
+        conn.execute(f"DELETE FROM audit_logs WHERE id IN ({placeholders})", ids)
+        conn.commit()
+
+    registrar_auditoria(
+        "AUDITORIA_REMOVIDA",
+        "audit_logs",
+        ",".join(str(row["id"]) for row in rows),
+        {
+            "total_removido": len(rows),
+            "motivo": motivo,
+            "backup": backup_path,
+        },
+    )
+    flash(f"{len(rows)} registro(s) de auditoria removido(s). Backup criado em {backup_path}.", "success")
+    return redirect(url_for("auditoria"))
 
 
 @app.route("/configuracoes", methods=["GET", "POST"])
